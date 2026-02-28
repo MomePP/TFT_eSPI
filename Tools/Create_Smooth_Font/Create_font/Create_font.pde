@@ -127,14 +127,14 @@ int fontNumber = -1; // << Use [Number] in brackets from the fonts listed.
 //                                                  the font numbers are listed when the sketch is run.
 //                |         1         2     |       Maximum filename size for SPIFFS is 31 including leading /
 //                 1234567890123456789012345        and added point size and .vlw extension, so max is 25
-String fontName = "Final-Frontier";  // Manually crop the filename length later after creation if needed
+String fontName = "Baloo2-Bold";  // Manually crop the filename length later after creation if needed
                                      // Note: SPIFFS does NOT accept underscore in a filename!
 String fontType = ".ttf";
 //String fontType = ".otf";
 
 
 // Define the font size in points for the TFT_eSPI font file
-int  fontSize = 28;
+int  fontSize = 6;
 
 // Font size to use in the Processing sketch display window that pops up (can be different to above)
 int displayFontSize = 28;
@@ -324,16 +324,18 @@ static final int[] unicodeBlocks = {
   //0x0030, 0x0039, //Example custom range (numbers 0-9)
   //0x0041, 0x005A, //Example custom range (Upper case A-Z)
   //0x0061, 0x007A, //Example custom range (Lower case a-z)
+  
+  0x2190, 0x2193
 };
 
 // Here we specify particular individual Unicodes to be included (appended at end of selected range)
 static final int[] specificUnicodes = {
 
   // Commonly used codes, add or remove // in next line
-  // 0x00A3, 0x00B0, 0x00B5, 0x03A9, 0x20AC, // £ ° µ Ω €
+  0x00A3, 0x00B0, 0x00B5, 0x03A9, 0x20AC, // £ ° µ Ω €
 
   // Numbers and characters for showing time, change next line to //* to use
-/*
+///*
     0x002B, 0x002D, 0x002E, 0x0030, 0x0031, 0x0032, 0x0033, 0x0034, // - + . 0 1 2 3 4
     0x0035, 0x0036, 0x0037, 0x0038, 0x0039, 0x003A, 0x0061, 0x006D, // 5 6 7 8 9 : a m
     0x0070,                                                         // p
@@ -522,7 +524,7 @@ void setup() {
     // Open up the FontFiles folder to access the saved file
     String path = sketchPath();
     if(openFolder){
-      Desktop.getDesktop().open(new File(path+"/FontFiles"));
+      launch(path + "/FontFiles");
     }
 
     System.err.println("All done! Note: Rectangles are displayed for non-existant characters.");
