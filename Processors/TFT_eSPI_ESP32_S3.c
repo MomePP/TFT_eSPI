@@ -584,6 +584,11 @@ void TFT_eSPI::pushPixels(const void* data_in, uint32_t len){
 #if defined (ESP32_DMA) && !defined (TFT_PARALLEL_8_BIT) //       DMA FUNCTIONS
 ////////////////////////////////////////////////////////////////////////////////////////
 
+// The only DMA transaction in flight: every push function waits for the previous one
+// (dmaWait) before it fills this in and queues it (queue_size = 1), so one descriptor serves
+// them all instead of one static per function.
+static spi_transaction_t dmaTrans;
+
 /***************************************************************************************
 ** Function name:           dmaBusy
 ** Description:             Check if DMA is busy
@@ -653,7 +658,7 @@ void TFT_eSPI::pushPixelsDMA(uint16_t* image, uint32_t len)
   _swapBytes = temp;
 
   esp_err_t ret;
-  static spi_transaction_t trans;
+  spi_transaction_t &trans = dmaTrans;
 
   memset(&trans, 0, sizeof(spi_transaction_t));
 
@@ -697,7 +702,7 @@ void TFT_eSPI::pushImageDMA(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t
   _swapBytes = temp;
 
   esp_err_t ret;
-  static spi_transaction_t trans;
+  spi_transaction_t &trans = dmaTrans;
 
   memset(&trans, 0, sizeof(spi_transaction_t));
 
@@ -785,7 +790,7 @@ void TFT_eSPI::pushImageDMA(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t
   _swapBytes = temp;
 
   esp_err_t ret;
-  static spi_transaction_t trans;
+  spi_transaction_t &trans = dmaTrans;
 
   memset(&trans, 0, sizeof(spi_transaction_t));
 
