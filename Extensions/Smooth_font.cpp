@@ -7,14 +7,156 @@
 ////////////////////////////////////////////////////////////////////////////////////////
 
 /***************************************************************************************
+** Shared glyph metric cache for fonts loaded from a (PROGMEM) VLW array
+***************************************************************************************/
+// Every TFT_eSPI / TFT_eSprite instance used to parse the 28-byte-per-glyph VLW table
+// into seven private malloc()ed arrays on every loadFont() call. The parse result only
+// depends on the font array, so it is computed once per distinct array and shared by
+// all instances. Entries are never freed: the number of distinct fonts is small and
+// bounded, and font arrays are assumed immutable (they live in flash).
+namespace
+{
+  constexpr uint32_t VLW_HEADER_BYTES = 24; // 6 x uint32_t
+  constexpr uint32_t VLW_GLYPH_BYTES  = 28; // 7 x int32_t per glyph
+  constexpr uint32_t VLW_FIELD_BYTES  = 4;
+  constexpr uint32_t VLW_HDR_COUNT    = 0;  // byte offsets inside the header
+  constexpr uint32_t VLW_HDR_ASCENT   = 16;
+  constexpr uint32_t VLW_HDR_DESCENT  = 20;
+  constexpr uint32_t VLW_GLYPH_UNICODE = 0; // byte offsets inside a glyph record
+  constexpr uint32_t VLW_GLYPH_HEIGHT  = 4;
+  constexpr uint32_t VLW_GLYPH_WIDTH   = 8;
+  constexpr uint32_t VLW_GLYPH_ADVANCE = 12;
+  constexpr uint32_t VLW_GLYPH_DY      = 16;
+  constexpr uint32_t VLW_GLYPH_DX      = 20;
+  constexpr uint32_t GLYPH_ARRAY_BYTES = 2 + 2 + 4 + 1 + 1 + 1 + 1; // per-glyph bytes of the metric arrays
+
+  struct FontCache
+  {
+    FontCache*            next;
+    const uint8_t*        array;
+    uint8_t               header[VLW_HEADER_BYTES];
+    TFT_eSPI::fontMetrics metrics;
+    bool                  sorted;
+    uint32_t*             bitmap;
+    uint16_t*             unicode;
+    int16_t*              dY;
+    uint8_t*              height;
+    uint8_t*              width;
+    uint8_t*              xAdvance;
+    int8_t*               dX;
+  };
+
+  FontCache* s_fontCache = nullptr; // Singly linked, prepend-only; accessed with acquire/release
+
+  uint32_t vlwRead32(const uint8_t* p)
+  {
+    return (uint32_t)pgm_read_byte(p) << 24 | (uint32_t)pgm_read_byte(p + 1) << 16 |
+           (uint32_t)pgm_read_byte(p + 2) << 8 | (uint32_t)pgm_read_byte(p + 3);
+  }
+
+  const FontCache* fontCacheFind(const uint8_t* array)
+  {
+    for (const FontCache* e = __atomic_load_n(&s_fontCache, __ATOMIC_ACQUIRE); e; e = e->next)
+      if (e->array == array && memcmp(e->header, array, VLW_HEADER_BYTES) == 0) return e;
+    return nullptr;
+  }
+
+  // Same parse as the per-instance loadMetrics() used to do, same field truncations
+  const FontCache* fontCacheBuild(const uint8_t* array)
+  {
+    const uint16_t count = (uint16_t)vlwRead32(array + VLW_HDR_COUNT);
+    FontCache* e = (FontCache*)malloc(sizeof(FontCache) + (size_t)count * GLYPH_ARRAY_BYTES);
+    if (e == nullptr) return nullptr;
+
+    // Arrays follow the header struct, widest element first so each stays naturally aligned
+    uint8_t* mem = (uint8_t*)(e + 1);
+    e->bitmap   = (uint32_t*)mem; mem += count * 4;
+    e->unicode  = (uint16_t*)mem; mem += count * 2;
+    e->dY       = (int16_t*)mem;  mem += count * 2;
+    e->height   = mem;            mem += count;
+    e->width    = mem;            mem += count;
+    e->xAdvance = mem;            mem += count;
+    e->dX       = (int8_t*)mem;
+
+    e->array = array;
+    memcpy(e->header, array, VLW_HEADER_BYTES);
+
+    TFT_eSPI::fontMetrics& m = e->metrics;
+    m.gArray   = array;
+    m.gCount   = count;
+    m.ascent   = (uint16_t)vlwRead32(array + VLW_HDR_ASCENT);
+    m.descent  = (uint16_t)vlwRead32(array + VLW_HDR_DESCENT);
+    m.maxAscent  = m.ascent;
+    m.maxDescent = m.descent;
+
+    uint32_t bitmapPtr = VLW_HEADER_BYTES + (uint32_t)count * VLW_GLYPH_BYTES;
+    bool sorted = true;
+
+    for (uint16_t g = 0; g < count; g++)
+    {
+      const uint8_t* rec = array + VLW_HEADER_BYTES + (uint32_t)g * VLW_GLYPH_BYTES;
+      e->unicode[g]  = (uint16_t)vlwRead32(rec + VLW_GLYPH_UNICODE);
+      e->height[g]   =  (uint8_t)vlwRead32(rec + VLW_GLYPH_HEIGHT);
+      e->width[g]    =  (uint8_t)vlwRead32(rec + VLW_GLYPH_WIDTH);
+      e->xAdvance[g] =  (uint8_t)vlwRead32(rec + VLW_GLYPH_ADVANCE);
+      e->dY[g]       =  (int16_t)vlwRead32(rec + VLW_GLYPH_DY);
+      e->dX[g]       =   (int8_t)vlwRead32(rec + VLW_GLYPH_DX);
+
+      if (g && e->unicode[g] < e->unicode[g - 1]) sorted = false;
+
+      // Different glyph sets have different descent values not always based on "p", so get maximum glyph descent
+      if (((int16_t)e->height[g] - (int16_t)e->dY[g]) > m.maxDescent)
+      {
+        // Avoid UTF coding values and characters that tend to give duff values
+        if (((e->unicode[g] > 0x20) && (e->unicode[g] < 0xA0) && (e->unicode[g] != 0x7F)) || (e->unicode[g] > 0xFF))
+          m.maxDescent = e->height[g] - e->dY[g];
+      }
+
+      e->bitmap[g] = bitmapPtr;
+      bitmapPtr += e->width[g] * e->height[g];
+    }
+
+    m.yAdvance   = m.maxAscent + m.maxDescent;
+    m.spaceWidth = (m.ascent + m.descent) * 2 / 7; // Guess at space width
+    e->sorted    = sorted;
+
+    // Publish the finished entry. Two tasks building the same font at the same moment can
+    // lose one entry from the list; the loser's block stays valid for whoever loaded it.
+    e->next = s_fontCache;
+    __atomic_store_n(&s_fontCache, e, __ATOMIC_RELEASE);
+    return e;
+  }
+}
+
+/***************************************************************************************
 ** Function name:           loadFont
 ** Description:             loads parameters from a font vlw array in memory
 *************************************************************************************x*/
 void TFT_eSPI::loadFont(const uint8_t array[])
 {
   if (array == nullptr) return;
+  if (fontLoaded) unloadFont();
+
+#ifdef FONT_FS_AVAILABLE
+  fs_font = false;
+#endif
   fontPtr = (uint8_t*) array;
-  loadFont("", false);
+
+  const FontCache* fc = fontCacheFind(array);
+  if (fc == nullptr) fc = fontCacheBuild(array);
+  if (fc == nullptr) return; // Out of memory: no font gets loaded
+
+  gFont     = fc->metrics;
+  gUnicode  = fc->unicode;
+  gHeight   = fc->height;
+  gWidth    = fc->width;
+  gxAdvance = fc->xAdvance;
+  gdY       = fc->dY;
+  gdX       = fc->dX;
+  gBitmap   = fc->bitmap;
+  gSorted   = fc->sorted;
+  gShared   = true;
+  fontLoaded = true;
 }
 
 #ifdef FONT_FS_AVAILABLE
@@ -94,9 +236,14 @@ void TFT_eSPI::loadFont(String fontName, bool flash)
 
   */
 
+#ifndef FONT_FS_AVAILABLE
+  // Only array fonts are available without a file system, see loadFont(array)
+  (void)fontName;
+  (void)flash;
+}
+#else
   if (fontLoaded) unloadFont();
 
-#ifdef FONT_FS_AVAILABLE
   if (fontName == "") fs_font = false;
   else { fontPtr = nullptr; fs_font = true; }
 
@@ -117,11 +264,6 @@ void TFT_eSPI::loadFont(String fontName, bool flash)
 
     fontFile.seek(0, fs::SeekSet);
   }
-#else
-  // Avoid unused varaible warning
-  fontName = fontName;
-  flash = flash;
-#endif
 
   gFont.gArray   = (const uint8_t*)fontPtr;
 
@@ -143,8 +285,10 @@ void TFT_eSPI::loadFont(String fontName, bool flash)
   // Fetch the metrics for each glyph
   loadMetrics();
 }
+#endif
 
 
+#ifdef FONT_FS_AVAILABLE
 /***************************************************************************************
 ** Function name:           loadMetrics
 ** Description:             Get the metrics for each glyph and store in RAM
@@ -188,6 +332,7 @@ void TFT_eSPI::loadMetrics(void)
 #endif
 
   uint16_t gNum = 0;
+  gSorted = true;
 
   while (gNum < gFont.gCount)
   {
@@ -198,6 +343,7 @@ void TFT_eSPI::loadMetrics(void)
     gdY[gNum]       =  (int16_t)readInt32(); // y delta from baseline
     gdX[gNum]       =   (int8_t)readInt32(); // x delta from cursor
     readInt32(); // ignored
+    if (gNum && gUnicode[gNum] < gUnicode[gNum - 1]) gSorted = false;
 
     //Serial.print("Unicode = 0x"); Serial.print(gUnicode[gNum], HEX); Serial.print(", gHeight  = "); Serial.println(gHeight[gNum]);
     //Serial.print("Unicode = 0x"); Serial.print(gUnicode[gNum], HEX); Serial.print(", gWidth  = "); Serial.println(gWidth[gNum]);
@@ -246,6 +392,7 @@ void TFT_eSPI::loadMetrics(void)
 
   gFont.spaceWidth = (gFont.ascent + gFont.descent) * 2/7;  // Guess at space width
 }
+#endif
 
 
 /***************************************************************************************
@@ -254,46 +401,27 @@ void TFT_eSPI::loadMetrics(void)
 *************************************************************************************x*/
 void TFT_eSPI::unloadFont( void )
 {
-  if (gUnicode)
+  if (gShared)
   {
-    free(gUnicode);
-    gUnicode = NULL;
-  }
-
-  if (gHeight)
-  {
-    free(gHeight);
-    gHeight = NULL;
-  }
-
-  if (gWidth)
-  {
-    free(gWidth);
-    gWidth = NULL;
-  }
-
-  if (gxAdvance)
-  {
-    free(gxAdvance);
+    // Arrays belong to the shared font cache, only drop the references
+    gUnicode  = NULL;
+    gHeight   = NULL;
+    gWidth    = NULL;
     gxAdvance = NULL;
+    gdY       = NULL;
+    gdX       = NULL;
+    gBitmap   = NULL;
+    gShared   = false;
   }
-
-  if (gdY)
+  else
   {
-    free(gdY);
-    gdY = NULL;
-  }
-
-  if (gdX)
-  {
-    free(gdX);
-    gdX = NULL;
-  }
-
-  if (gBitmap)
-  {
-    free(gBitmap);
-    gBitmap = NULL;
+    free(gUnicode);  gUnicode  = NULL;
+    free(gHeight);   gHeight   = NULL;
+    free(gWidth);    gWidth    = NULL;
+    free(gxAdvance); gxAdvance = NULL;
+    free(gdY);       gdY       = NULL;
+    free(gdX);       gdX       = NULL;
+    free(gBitmap);   gBitmap   = NULL;
   }
 
   gFont.gArray = nullptr;
@@ -306,6 +434,9 @@ void TFT_eSPI::unloadFont( void )
 }
 
 
+#ifdef FONT_FS_AVAILABLE
+
+
 /***************************************************************************************
 ** Function name:           readInt32
 ** Description:             Get a 32-bit integer from the font file
@@ -314,7 +445,6 @@ uint32_t TFT_eSPI::readInt32(void)
 {
   uint32_t val = 0;
 
-#ifdef FONT_FS_AVAILABLE
   if (fs_font) {
     val  = (uint32_t)fontFile.read() << 24;
     val |= (uint32_t)fontFile.read() << 16;
@@ -322,7 +452,6 @@ uint32_t TFT_eSPI::readInt32(void)
     val |= (uint32_t)fontFile.read();
   }
   else
-#endif
   {
     val  = (uint32_t)pgm_read_byte(fontPtr++) << 24;
     val |= (uint32_t)pgm_read_byte(fontPtr++) << 16;
@@ -332,6 +461,7 @@ uint32_t TFT_eSPI::readInt32(void)
 
   return val;
 }
+#endif
 
 
 /***************************************************************************************
@@ -340,11 +470,31 @@ uint32_t TFT_eSPI::readInt32(void)
 *************************************************************************************x*/
 bool TFT_eSPI::getUnicodeIndex(uint16_t unicode, uint16_t *index)
 {
-  for (uint16_t i = 0; i < gFont.gCount; i++)
+  uint16_t lo = 0;
+  uint16_t hi = gFont.gCount;
+
+  if (gSorted)
   {
-    if (gUnicode[i] == unicode)
+    // Lower bound, so duplicated code points resolve to the first record like the linear scan
+    while (lo < hi)
     {
-      *index = i;
+      const uint16_t mid = (uint16_t)((lo + hi) >> 1);
+      if (gUnicode[mid] < unicode) lo = (uint16_t)(mid + 1);
+      else hi = mid;
+    }
+    if (lo < gFont.gCount && gUnicode[lo] == unicode)
+    {
+      *index = lo;
+      return true;
+    }
+    return false;
+  }
+
+  for (; lo < hi; lo++)
+  {
+    if (gUnicode[lo] == unicode)
+    {
+      *index = lo;
       return true;
     }
   }

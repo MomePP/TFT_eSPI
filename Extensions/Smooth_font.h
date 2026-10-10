@@ -41,6 +41,8 @@ fontMetrics gFont = { nullptr, 0, 0, 0, 0, 0, 0, 0 };
   uint32_t* gBitmap = NULL;   //file pointer to greyscale bitmap
 
   bool     fontLoaded = false; // Flags when a anti-aliased font is loaded
+  bool     gShared    = false; // Glyph metric arrays belong to the shared per-font cache (see loadFont(array)), never free()d here
+  bool     gSorted    = false; // gUnicode[] is sorted ascending, so getUnicodeIndex() can bisect
 
 #ifdef FONT_FS_AVAILABLE
   fs::File fontFile;
