@@ -160,9 +160,11 @@
 **                         Section 4: Setup fonts
 ***************************************************************************************/
 // Use GLCD font in error case where user requests a smooth font file
-// that does not exist (this is a temporary fix to stop ESP32 reboot)
+// that does not exist (this is a temporary fix to stop ESP32 reboot).
+// Define TFT_ESPI_NO_GLCD_FALLBACK to drop it (and the 5x7 font table) when a smooth
+// font is always loaded before any text is drawn: nothing is drawn if none is.
 #ifdef SMOOTH_FONT
-  #ifndef LOAD_GLCD
+  #if !defined (LOAD_GLCD) && !defined (TFT_ESPI_NO_GLCD_FALLBACK)
     #define LOAD_GLCD
   #endif
 #endif
