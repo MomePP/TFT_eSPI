@@ -5632,7 +5632,12 @@ int16_t TFT_eSPI::drawString(const char *string, int32_t poX, int32_t poY, uint8
   uint16_t n = 0;
 
 #ifdef SMOOTH_FONT
-  if(fontLoaded) {
+  // One bus transaction for the whole string, glyphs and padding included
+  const bool smoothText = fontLoaded;
+  const bool wasInTransaction = inTransaction;
+  if(smoothText) {
+    begin_nin_write();
+    inTransaction = true;
     setCursor(poX, poY);
 
     bool fillbg = _fillbg;
@@ -5718,6 +5723,13 @@ int16_t TFT_eSPI::drawString(const char *string, int32_t poX, int32_t poY, uint8
   }
 #endif
 //^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ DEBUG ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+#ifdef SMOOTH_FONT
+  if (smoothText) {
+    inTransaction = wasInTransaction;
+    end_nin_write();
+  }
+#endif
 
 return sumX;
 }
