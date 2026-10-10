@@ -123,8 +123,9 @@ SPI3_HOST = 2
   #define SPI_BUSY_CHECK while (*_spi_cmd&SPI_USR)
 #endif
 
-// If smooth font is used then it is likely SPIFFS will be needed
-#ifdef SMOOTH_FONT
+// If smooth font is used then it is likely SPIFFS will be needed. Define TFT_ESPI_NO_FS_FONTS
+// when smooth fonts only come from arrays in flash: it drops SPIFFS and the file font code.
+#if defined (SMOOTH_FONT) && !defined (TFT_ESPI_NO_FS_FONTS)
   // Call up the SPIFFS (SPI FLASH Filing System) for the anti-aliased fonts
   #define FS_NO_GLOBALS
   #include <FS.h>
