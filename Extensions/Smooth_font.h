@@ -61,3 +61,6 @@ fontMetrics gFont = { nullptr, 0, 0, 0, 0, 0, 0, 0 };
 
   uint8_t* fontPtr = nullptr;
 
+  void     drawGlyphCell(uint16_t gNum, int32_t cx, int32_t cy, int32_t rx0, int32_t rx1, int32_t ry0, int32_t ry1);
+  void     drawGlyphRuns(uint16_t gNum, int32_t cx, int32_t cy, int32_t bx);
+  void     drawGlyphPixels(uint16_t gNum, int32_t cx, int32_t cy, int32_t bx);

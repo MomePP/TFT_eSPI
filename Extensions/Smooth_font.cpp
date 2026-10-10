@@ -506,7 +506,201 @@ bool TFT_eSPI::getUnicodeIndex(uint16_t unicode, uint16_t *index)
 ** Function name:           drawGlyph
 ** Description:             Write a character to the TFT cursor position
 *************************************************************************************x*/
-// Expects file to be open
+// The pixels written (and their colours) are exactly those of the original renderer, which
+// issued a window + colour burst per run of opaque pixels and a full address sequence per
+// anti-aliased pixel. They are now streamed per row run, or, when the glyph and its background
+// completely cover the character cell, through a single window for the whole cell.
+namespace
+{
+  constexpr uint8_t  GLYPH_ALPHA_OPAQUE = 0xFF;
+  constexpr uint32_t GLYPH_CHUNK_PIXELS = 64; // Pixels per stack line buffer pushed to the bus
+
+  inline uint16_t glyphWire(uint16_t c) { return (uint16_t)(c << 8 | c >> 8); } // Colour as sent on the bus
+}
+
+// Glyph and background cover the whole cell: one window, rows streamed in chunks
+void TFT_eSPI::drawGlyphCell(uint16_t gNum, int32_t cx, int32_t cy, int32_t rx0, int32_t rx1, int32_t ry0, int32_t ry1)
+{
+  if (_vpOoB) return;
+
+  int32_t x0 = rx0 + _xDatum; if (x0 < _vpX) x0 = _vpX;
+  int32_t x1 = rx1 + _xDatum; if (x1 > _vpW) x1 = _vpW;
+  int32_t y0 = ry0 + _yDatum; if (y0 < _vpY) y0 = _vpY;
+  int32_t y1 = ry1 + _yDatum; if (y1 > _vpH) y1 = _vpH;
+  if (x0 >= x1 || y0 >= y1) return;
+
+  const int32_t gW = gWidth[gNum];
+  const int32_t gH = gHeight[gNum];
+  const uint8_t* bitmap = gFont.gArray + gBitmap[gNum];
+  const uint16_t fg = textcolor;
+  const uint16_t bg = textbgcolor;
+  const uint16_t fgWire = glyphWire(fg);
+  const uint16_t bgWire = glyphWire(bg);
+
+  alignas(4) uint16_t line[GLYPH_CHUNK_PIXELS];
+  const bool swap = _swapBytes;
+  _swapBytes = false; // Colours are already in bus order
+
+  setWindow(x0, y0, x1 - 1, y1 - 1);
+
+  for (int32_t Y = y0; Y < y1; Y++)
+  {
+    const int32_t gy = Y - _yDatum - cy;
+    const uint8_t* row = (gy >= 0 && gy < gH) ? bitmap + gy * gW : nullptr;
+
+    for (int32_t X = x0; X < x1; )
+    {
+      int32_t n = x1 - X;
+      if (n > (int32_t)GLYPH_CHUNK_PIXELS) n = GLYPH_CHUNK_PIXELS;
+
+      for (int32_t i = 0; i < n; i++)
+      {
+        const int32_t gx = X + i - _xDatum - cx;
+        uint16_t c = bgWire;
+        if (row && gx >= 0 && gx < gW)
+        {
+          const uint8_t pixel = row[gx];
+          if (pixel == GLYPH_ALPHA_OPAQUE) c = fgWire;
+          else if (pixel) c = glyphWire(alphaBlend(pixel, fg, bg));
+        }
+        line[i] = c;
+      }
+
+      pushPixels(line, n);
+      X += n;
+    }
+  }
+
+  _swapBytes = swap;
+}
+
+// Opaque and anti-aliased pixels (plus transparent ones from column bx on when the background
+// is filled) written as one window per run of adjacent pixels in a row
+void TFT_eSPI::drawGlyphRuns(uint16_t gNum, int32_t cx, int32_t cy, int32_t bx)
+{
+  if (_vpOoB) return;
+
+  const int32_t gW = gWidth[gNum];
+  const int32_t gH = gHeight[gNum];
+  const uint8_t* bitmap = gFont.gArray + gBitmap[gNum];
+  const uint16_t fg = textcolor;
+  const uint16_t bg = textbgcolor;
+  const uint16_t fgWire = glyphWire(fg);
+  const uint16_t bgWire = glyphWire(bg);
+  const int32_t fillFrom = _fillbg ? bx : gW; // Transparent pixels from this column on are background
+
+  int32_t xa = _vpX - _xDatum - cx; if (xa < 0) xa = 0;
+  int32_t xb = _vpW - _xDatum - cx; if (xb > gW) xb = gW;
+  if (xa >= xb) return;
+
+  alignas(4) uint16_t line[GLYPH_CHUNK_PIXELS];
+  const bool swap = _swapBytes;
+  _swapBytes = false; // Colours are already in bus order
+
+  for (int32_t y = 0; y < gH; y++)
+  {
+    const int32_t Y = cy + y + _yDatum;
+    if (Y < _vpY) continue;
+    if (Y >= _vpH) break;
+
+    const uint8_t* row = bitmap + y * gW;
+    int32_t x = xa;
+    while (x < xb)
+    {
+      while (x < xb && row[x] == 0 && x < fillFrom) x++;
+      if (x >= xb) break;
+
+      const int32_t xs = x++;
+      while (x < xb && (row[x] != 0 || x >= fillFrom)) x++;
+
+      setWindow(cx + xs + _xDatum, Y, cx + x - 1 + _xDatum, Y);
+
+      for (int32_t k = xs; k < x; )
+      {
+        int32_t n = x - k;
+        if (n > (int32_t)GLYPH_CHUNK_PIXELS) n = GLYPH_CHUNK_PIXELS;
+
+        for (int32_t i = 0; i < n; i++)
+        {
+          const uint8_t pixel = row[k + i];
+          if (pixel == GLYPH_ALPHA_OPAQUE) line[i] = fgWire;
+          else if (pixel) line[i] = glyphWire(alphaBlend(pixel, fg, bg));
+          else line[i] = bgWire;
+        }
+
+        pushPixels(line, n);
+        k += n;
+      }
+    }
+  }
+
+  _swapBytes = swap;
+}
+
+// Per-pixel renderer for what batching cannot reproduce: glyph bitmaps read from a file
+// and the getColor() callback, which is consulted pixel by pixel
+void TFT_eSPI::drawGlyphPixels(uint16_t gNum, int32_t cx, int32_t cy, int32_t bx)
+{
+  const int32_t gW = gWidth[gNum];
+  const int32_t gH = gHeight[gNum];
+  const uint16_t fg = textcolor;
+  uint16_t bg = textbgcolor;
+  const uint8_t* bitmap = nullptr;
+  uint8_t* pbuffer = nullptr;
+
+#ifdef FONT_FS_AVAILABLE
+  if (fs_font)
+  {
+    fontFile.seek(gBitmap[gNum], fs::SeekSet);
+    pbuffer = (uint8_t*)malloc(gW);
+  }
+  else
+#endif
+  bitmap = gFont.gArray + gBitmap[gNum];
+
+  for (int32_t y = 0; y < gH; y++)
+  {
+#ifdef FONT_FS_AVAILABLE
+    if (fs_font)
+    {
+      if (spiffs)
+      {
+        fontFile.read(pbuffer, gW);
+      }
+      else
+      {
+        inTransaction = false;
+        end_tft_write();     // Release SPI for SD card transaction
+        fontFile.read(pbuffer, gW);
+        begin_tft_write();   // Re-start SPI for TFT transaction
+        inTransaction = true;
+      }
+    }
+#endif
+
+    for (int32_t x = 0; x < gW; x++)
+    {
+      const uint8_t pixel = pbuffer ? pbuffer[x] : bitmap[x + gW * y];
+
+      if (pixel == 0)
+      {
+        if (_fillbg && x >= bx) drawPixel(x + cx, y + cy, bg);
+      }
+      else if (pixel == GLYPH_ALPHA_OPAQUE)
+      {
+        drawPixel(x + cx, y + cy, fg);
+      }
+      else
+      {
+        if (getColor) bg = getColor(x + cx, y + cy);
+        drawPixel(x + cx, y + cy, alphaBlend(pixel, fg, bg));
+      }
+    }
+  }
+
+  if (pbuffer) free(pbuffer);
+}
+
 void TFT_eSPI::drawGlyph(uint16_t code)
 {
   uint16_t fg = textcolor;
@@ -554,132 +748,79 @@ void TFT_eSPI::drawGlyph(uint16_t code)
     if (textwrapY && ((cursor_y + gFont.yAdvance) >= height())) cursor_y = 0;
     if (cursor_x == 0) cursor_x -= gdX[gNum];
 
-    uint8_t* pbuffer = nullptr;
-    const uint8_t* gPtr = (const uint8_t*) gFont.gArray;
-
-#ifdef FONT_FS_AVAILABLE
-    if (fs_font)
-    {
-      fontFile.seek(gBitmap[gNum], fs::SeekSet);
-      pbuffer =  (uint8_t*)malloc(gWidth[gNum]);
-    }
-#endif
-
+    const int16_t gW = gWidth[gNum];
+    const int16_t gH = gHeight[gNum];
+    const int16_t gAdvance = gxAdvance[gNum];
     int16_t cy = cursor_y + gFont.maxAscent - gdY[gNum];
     int16_t cx = cursor_x + gdX[gNum];
+    int16_t bx = 0;
 
-    //  if (cx > width() && bg_cursor_x > width()) return;
-    //  if (cursor_y > height()) return;
+    bool perPixel = (getColor != nullptr);
+#ifdef FONT_FS_AVAILABLE
+    if (fs_font) perPixel = true;
+#endif
 
-    int16_t  fxs = cx;
-    uint32_t fl = 0;
-    int16_t  bxs = cx;
-    uint32_t bl = 0;
-    int16_t  bx = 0;
-    uint8_t pixel;
+    // Keep any transaction the caller holds (startWrite() or drawString()) open
+    const bool wasInTransaction = inTransaction;
+    begin_tft_write();
+    inTransaction = true;
 
-    startWrite(); // Avoid slow ESP32 transaction overhead for every pixel
+    const int16_t cellWidth = (cursor_x + gAdvance) - bg_cursor_x;
 
-    int16_t fillwidth  = 0;
-    int16_t fillheight = 0;
-
-    // Fill area above glyph
-    if (_fillbg) {
-      fillwidth  = (cursor_x + gxAdvance[gNum]) - bg_cursor_x;
-      if (fillwidth > 0) {
-        fillheight = gFont.maxAscent - gdY[gNum];
-        // Could be negative
-        if (fillheight > 0) {
-          fillRect(bg_cursor_x, cursor_y, fillwidth, fillheight, textbgcolor);
-        }
-      }
-      else {
-        // Could be negative
-        fillwidth = 0;
-      }
-
-      // Fill any area to left of glyph                              
-      if (bg_cursor_x < cx) fillRect(bg_cursor_x, cy, cx - bg_cursor_x, gHeight[gNum], textbgcolor);
-      // Set x position in glyph area where background starts
-      if (bg_cursor_x > cx) bx = bg_cursor_x - cx;
-      // Fill any area to right of glyph
-      if (cx + gWidth[gNum] < cursor_x + gxAdvance[gNum]) {
-        fillRect(cx + gWidth[gNum], cy, (cursor_x + gxAdvance[gNum]) - (cx + gWidth[gNum]), gHeight[gNum], textbgcolor);
-      }
-    }
-
-    for (int32_t y = 0; y < gHeight[gNum]; y++)
+    if (_fillbg && !perPixel && cellWidth > 0 && bg_cursor_x <= cx && cx + gW <= cursor_x + gAdvance)
     {
-#ifdef FONT_FS_AVAILABLE
-      if (fs_font) {
-        if (spiffs)
-        {
-          fontFile.read(pbuffer, gWidth[gNum]);
-          //Serial.println("SPIFFS");
-        }
-        else
-        {
-          endWrite();    // Release SPI for SD card transaction
-          fontFile.read(pbuffer, gWidth[gNum]);
-          startWrite();  // Re-start SPI for TFT transaction
-          //Serial.println("Not SPIFFS");
-        }
-      }
-#endif
-
-      for (int32_t x = 0; x < gWidth[gNum]; x++)
-      {
-#ifdef FONT_FS_AVAILABLE
-        if (fs_font) pixel = pbuffer[x];
-        else
-#endif
-        pixel = pgm_read_byte(gPtr + gBitmap[gNum] + x + gWidth[gNum] * y);
-
-        if (pixel)
-        {
-          if (bl) { drawFastHLine( bxs, y + cy, bl, bg); bl = 0; }
-          if (pixel != 0xFF)
-          {
-            if (fl) {
-              if (fl==1) drawPixel(fxs, y + cy, fg);
-              else drawFastHLine( fxs, y + cy, fl, fg);
-              fl = 0;
-            }
-            if (getColor) bg = getColor(x + cx, y + cy);
-            drawPixel(x + cx, y + cy, alphaBlend(pixel, fg, bg));
-          }
-          else
-          {
-            if (fl==0) fxs = x + cx;
-            fl++;
-          }
-        }
-        else
-        {
-          if (fl) { drawFastHLine( fxs, y + cy, fl, fg); fl = 0; }
-          if (_fillbg) {
-            if (x >= bx) {
-              if (bl==0) bxs = x + cx;
-              bl++;
-            }
-          }
-        }
-      }
-      if (fl) { drawFastHLine( fxs, y + cy, fl, fg); fl = 0; }
-      if (bl) { drawFastHLine( bxs, y + cy, bl, bg); bl = 0; }
+      // Background and glyph tile the whole cell: rows above, glyph rows and rows below
+      const int32_t top    = (cursor_y < cy) ? cursor_y : cy;
+      const int32_t bottom = (cy + gH > cursor_y + gFont.yAdvance) ? cy + gH : cursor_y + gFont.yAdvance;
+      drawGlyphCell(gNum, cx, cy, bg_cursor_x, bg_cursor_x + cellWidth, top, bottom);
     }
+    else
+    {
+      int16_t fillwidth  = 0;
+      int16_t fillheight = 0;
 
-    // Fill area below glyph
-    if (fillwidth > 0) {
-      fillheight = (cursor_y + gFont.yAdvance) - (cy + gHeight[gNum]);
-      if (fillheight > 0) {
-        fillRect(bg_cursor_x, cy + gHeight[gNum], fillwidth, fillheight, textbgcolor);
+      // Fill area above glyph
+      if (_fillbg) {
+        fillwidth  = cellWidth;
+        if (fillwidth > 0) {
+          fillheight = gFont.maxAscent - gdY[gNum];
+          // Could be negative
+          if (fillheight > 0) {
+            fillRect(bg_cursor_x, cursor_y, fillwidth, fillheight, textbgcolor);
+          }
+        }
+        else {
+          // Could be negative
+          fillwidth = 0;
+        }
+
+        // Fill any area to left of glyph
+        if (bg_cursor_x < cx) fillRect(bg_cursor_x, cy, cx - bg_cursor_x, gH, textbgcolor);
+        // Set x position in glyph area where background starts
+        if (bg_cursor_x > cx) bx = bg_cursor_x - cx;
+        // Fill any area to right of glyph
+        if (cx + gW < cursor_x + gAdvance) {
+          fillRect(cx + gW, cy, (cursor_x + gAdvance) - (cx + gW), gH, textbgcolor);
+        }
+      }
+
+      if (perPixel) drawGlyphPixels(gNum, cx, cy, bx);
+      else drawGlyphRuns(gNum, cx, cy, bx);
+
+      // Fill area below glyph
+      if (fillwidth > 0) {
+        fillheight = (cursor_y + gFont.yAdvance) - (cy + gH);
+        if (fillheight > 0) {
+          fillRect(bg_cursor_x, cy + gH, fillwidth, fillheight, textbgcolor);
+        }
       }
     }
 
-    if (pbuffer) free(pbuffer);
-    cursor_x += gxAdvance[gNum];
-    endWrite();
+    cursor_x += gAdvance;
+
+    inTransaction = wasInTransaction;
+    DMA_BUSY_CHECK; // Same hand-over to DMA users as the endWrite() this replaced
+    end_tft_write();
   }
   else
   {
