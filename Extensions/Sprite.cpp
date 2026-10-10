@@ -2491,12 +2491,23 @@ void TFT_eSprite::drawGlyph(uint16_t code)
     //  if (cx > width() && bg_cursor_x > width()) return;
     //  if (cursor_y > height()) return;
 
-    int16_t  fxs = cx;
-    uint32_t fl = 0;
-    int16_t  bxs = cx;
-    uint32_t bl = 0;
     int16_t  bx = 0;
     uint8_t pixel = 0;
+
+    // Glyph pixels are stored the moment they are classified instead of being collected into
+    // runs first: the pixels and colours are the same, only the number of calls drops. 16 bpp
+    // sprites are written straight into the frame buffer (colours are kept byte swapped there).
+    auto put = [this](int32_t px, int32_t py, uint16_t color)
+    {
+      if (_bpp == 16)
+      {
+        px += _xDatum;
+        py += _yDatum;
+        if (_vpOoB || (px < _vpX) || (py < _vpY) || (px >= _vpW) || (py >= _vpH)) return;
+        _img[px + py * _iwidth] = (uint16_t)(color >> 8 | color << 8);
+      }
+      else drawPixel(px, py, color);
+    };
 
     int16_t fillwidth  = 0;
     int16_t fillheight = 0;
@@ -2525,54 +2536,40 @@ void TFT_eSprite::drawGlyph(uint16_t code)
       }
     }
 
-    for (int32_t y = 0; y < gHeight[gNum]; y++)
+    const int32_t gW = gWidth[gNum];
+    const int32_t gH = gHeight[gNum];
+    const uint8_t* gBits = gPtr + gBitmap[gNum];
+
+    for (int32_t y = 0; y < gH; y++)
     {
 #ifdef FONT_FS_AVAILABLE
       if (fs_font) {
-        fontFile.read(pbuffer, gWidth[gNum]);
+        fontFile.read(pbuffer, gW);
       }
 #endif
 
-      for (int32_t x = 0; x < gWidth[gNum]; x++)
+      for (int32_t x = 0; x < gW; x++)
       {
 #ifdef FONT_FS_AVAILABLE
         if (fs_font) pixel = pbuffer[x];
         else
 #endif
-        pixel = pgm_read_byte(gPtr + gBitmap[gNum] + x + gWidth[gNum] * y);
+        pixel = pgm_read_byte(gBits + x + gW * y);
 
-        if (pixel)
+        if (pixel == 0)
         {
-          if (bl) { drawFastHLine( bxs, y + cy, bl, bg); bl = 0; }
-          if (pixel != 0xFF)
-          {
-            if (fl) {
-              if (fl==1) drawPixel(fxs, y + cy, fg);
-              else drawFastHLine( fxs, y + cy, fl, fg);
-              fl = 0;
-            }
-            if (getBG) bg = readPixel(x + cx, y + cy);
-            drawPixel(x + cx, y + cy, alphaBlend(pixel, fg, bg));
-          }
-          else
-          {
-            if (fl==0) fxs = x + cx;
-            fl++;
-          }
+          if (_fillbg && x >= bx) put(x + cx, y + cy, bg);
+        }
+        else if (pixel == 0xFF)
+        {
+          put(x + cx, y + cy, fg);
         }
         else
         {
-          if (fl) { drawFastHLine( fxs, y + cy, fl, fg); fl = 0; }
-          if (_fillbg) {
-            if (x >= bx) {
-              if (bl==0) bxs = x + cx;
-              bl++;
-            }
-          }
+          if (getBG) bg = readPixel(x + cx, y + cy);
+          put(x + cx, y + cy, alphaBlend(pixel, fg, bg));
         }
       }
-      if (fl) { drawFastHLine( fxs, y + cy, fl, fg); fl = 0; }
-      if (bl) { drawFastHLine( bxs, y + cy, bl, bg); bl = 0; }
     }
 
     // Fill area below glyph
