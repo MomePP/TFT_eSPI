@@ -1,4 +1,15 @@
 A ["Discussions"](https://github.com/Bodmer/TFT_eSPI/discussions) facility has been added for Q&A etc. Use the ["Issues"](https://github.com/Bodmer/TFT_eSPI/issues) tab only for problems with the library. Thanks!
+
+# GoGoBoard fork notes (MomePP/TFT_eSPI)
+Changes to the smooth (VLW) font path, none of which alter the pixels drawn:
+
+- `loadFont(array)` parses the glyph table of a font array once and shares the result between all `TFT_eSPI` / `TFT_eSprite` instances (arrays are never freed and must not change after the first load). Reloading a font is a pointer copy, `getUnicodeIndex()` bisects sorted tables.
+- `drawGlyph()` streams a glyph as one window per run of written pixels, or one window for the whole character cell when the glyph covers it (`setTextColor(fg, bg, true)` or `setTextPadding()`), instead of a window per anti-aliased pixel. `TFT_eSprite::drawGlyph()` writes 16 bpp sprite pixels directly.
+- `drawGlyph()` no longer ends a transaction opened with `startWrite()`, and `drawString()` keeps one bus transaction open for a whole smooth-font string.
+- Build flag `TFT_ESPI_NO_FS_FONTS`: smooth fonts only from arrays, leaves out SPIFFS and the file font reader (`loadFont(String, ...)` becomes a no-op).
+- Build flag `TFT_ESPI_NO_GLCD_FALLBACK`: do not force `LOAD_GLCD` for `SMOOTH_FONT`. Saves the 5x7 font and its renderer; text drawn while no smooth font is loaded then draws nothing.
+- ESP32-S3 DMA: one shared `spi_transaction_t` for all push functions.
+
 # News
 1. The Create_font Processing sketch has been updated to automatically create a complete C header file. The automatic opening of the font folder can also be disabled within the Processing sketch. (Thanks to Pierre-Loup Martin).
 
