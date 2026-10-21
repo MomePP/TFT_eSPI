@@ -830,7 +830,10 @@ extern "C" void dma_end_callback();
 
 void IRAM_ATTR dma_end_callback(spi_transaction_t *spi_tx)
 {
-  // WRITE_PERI_REG(SPI_DMA_CONF_REG(spi_host), 0);
+  // Clear the DMA config of the SPI peripheral this driver drives. SPI_PORT is
+  // the REG_SPI_BASE index of that peripheral (2 = GPSPI2/FSPI, 3 = GPSPI3/HSPI).
+  // Upstream (#3880, then c00d8f4) indexes it with DMA_CHANNEL, which is SPI_DMA_CH_AUTO (3) on
+  // the S3 and so always names GPSPI3: wrong for an FSPI display such as GoGo's.
   WRITE_PERI_REG(SPI_DMA_CONF_REG(SPI_PORT), 0);
 }
 
