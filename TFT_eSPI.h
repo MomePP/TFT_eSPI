@@ -93,7 +93,9 @@
 #endif
 
 // Include the processor specific drivers
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#if defined(TFT_VIRTUAL_BUS)
+  #include "Processors/TFT_eSPI_VirtualBus.h"
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
   #include "Processors/TFT_eSPI_ESP32_S3.h"
 #elif defined(CONFIG_IDF_TARGET_ESP32C3)
   #include "Processors/TFT_eSPI_ESP32_C3.h"
@@ -822,7 +824,7 @@ class TFT_eSPI : public Print { friend class TFT_eSprite; // Sprite class has ac
   bool     verifySetupID(uint32_t id);
 
   // Global variables
-#if !defined (TFT_PARALLEL_8_BIT) && !defined (RP2040_PIO_INTERFACE)
+#if !defined (TFT_PARALLEL_8_BIT) && !defined (RP2040_PIO_INTERFACE) && !defined (TFT_VIRTUAL_BUS)
   static   SPIClass& getSPIinstance(void); // Get SPI class handle
 #endif
   uint32_t textcolor, textbgcolor;         // Text foreground and background colours

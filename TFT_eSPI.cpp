@@ -15,7 +15,9 @@
 
 #include "TFT_eSPI.h"
 
-#if defined (ESP32)
+#if defined (TFT_VIRTUAL_BUS)
+  #include "Processors/TFT_eSPI_VirtualBus.c"
+#elif defined (ESP32)
   #if defined(CONFIG_IDF_TARGET_ESP32S3)
     #include "Processors/TFT_eSPI_ESP32_S3.c" // Tested with SPI and 8-bit parallel
   #elif defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6)
@@ -5957,7 +5959,7 @@ void TFT_eSPI::setTextFont(uint8_t f)
 ** Function name:           getSPIinstance
 ** Description:             Get the instance of the SPI class
 ***************************************************************************************/
-#if !defined (TFT_PARALLEL_8_BIT) && !defined (RP2040_PIO_INTERFACE)
+#if !defined (TFT_PARALLEL_8_BIT) && !defined (RP2040_PIO_INTERFACE) && !defined (TFT_VIRTUAL_BUS)
 SPIClass& TFT_eSPI::getSPIinstance(void)
 {
   return spi;

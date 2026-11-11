@@ -9,6 +9,7 @@ Changes to the smooth (VLW) font path, none of which alter the pixels drawn:
 - Build flag `TFT_ESPI_NO_FS_FONTS`: smooth fonts only from arrays, leaves out SPIFFS and the file font reader (`loadFont(String, ...)` becomes a no-op).
 - Build flag `TFT_ESPI_NO_GLCD_FALLBACK`: do not force `LOAD_GLCD` for `SMOOTH_FONT`. Saves the 5x7 font and its renderer; text drawn while no smooth font is loaded then draws nothing.
 - ESP32-S3 DMA: one shared `spi_transaction_t` for all push functions.
+- Build flag `TFT_VIRTUAL_BUS` (`Processors/TFT_eSPI_VirtualBus.{h,c}`): no SPI port and no pin. Every bus byte, with the chip select and DC levels, goes to three functions the application defines (`tftVirtualBusChipSelect()`, `tftVirtualBusDataMode()`, `tftVirtualBusTransfer()`), which model the display controller of the selected driver. The setup's `TFT_CS`, `TFT_DC`, `TFT_RST`, `TFT_BL`, `TFT_MOSI` and `TFT_SCLK` are dropped. The DMA pushes send at once and treat the caller's buffer as the ESP32-S3 processor does. For a processor the library has no file for, or a panel it has no driver for.
 
 
 I have setup a Ko-fi account so you can ["buy me a coffee!"](https://ko-fi.com/Bodmer) This encourages me to add new features and capabiities to TFT_eSPI.
