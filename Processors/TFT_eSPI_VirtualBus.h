@@ -34,6 +34,9 @@ uint8_t tftVirtualBusTransfer(uint8_t out);     // one byte out; the return valu
 // Code to check if DMA is busy, used by SPI bus transaction startWrite and endWrite functions
 #define DMA_BUSY_CHECK // Nothing is queued: a DMA push has left the bus when it returns
 
+// The model of the controller takes the next command at once, so init() has nothing to wait for
+#define tftInitDelay(ms)
+
 #if !defined (SUPPORT_TRANSACTIONS)
   #define SUPPORT_TRANSACTIONS
 #endif
