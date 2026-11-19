@@ -703,7 +703,9 @@ void TFT_eSPI::init(uint8_t tc)
   writecommand(TFT_SWRST); // Software reset
 #endif
 
+#if !defined (TFT_VIRTUAL_BUS) // the application's model of the controller takes the next command at once
   delay(150); // Wait for reset to complete
+#endif
 
   begin_tft_write();
 
@@ -955,7 +957,9 @@ void TFT_eSPI::commandList (const uint8_t *addr)
     if (ms)
     {
       ms = pgm_read_byte(addr++);        // Read post-command delay time (ms)
+#if !defined (TFT_VIRTUAL_BUS) // as the reset wait above
       delay( (ms==255 ? 500 : ms) );
+#endif
     }
   }
 
